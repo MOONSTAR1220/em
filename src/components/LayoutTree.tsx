@@ -1,8 +1,9 @@
 import classNames from 'classnames'
 import _ from 'lodash'
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useSelector } from 'react-redux'
 import { token } from '../../styled-system/tokens'
+import Autofocus from '../@types/Autofocus'
 import Index from '../@types/IndexType'
 import LazyEnv from '../@types/LazyEnv'
 import Path from '../@types/Path'
@@ -14,6 +15,7 @@ import { isTouch } from '../browser'
 import { HOME_PATH } from '../constants'
 import testFlags from '../e2e/testFlags'
 import attributeEquals from '../selectors/attributeEquals'
+import calculateAutofocus from '../selectors/calculateAutofocus'
 import findDescendant from '../selectors/findDescendant'
 import getChildren, { childrenFilterPredicate, getChildrenRanked, hasChildren } from '../selectors/getChildren'
 import getContextsSortedAndRanked from '../selectors/getContextsSortedAndRanked'
@@ -62,6 +64,8 @@ type TreeThought = {
   // style inherited from parents with =children/=style and grandparents with =grandchildren/=style
   style?: React.CSSProperties | null
   thoughtId: string
+  isLastVisible?: boolean
+  autofocus: Autofocus
   // keys of visible children
   // only used in table view to calculate the width of column 1
   visibleChildrenKeys?: string[]
@@ -145,7 +149,7 @@ const useSizeTracking = () => {
         sizeRemovalTimeouts.current.delete(key)
 
         setSizes(sizesOld =>
-          height === sizesOld[key]?.height && isVisible === sizesOld[key]?.isVisible
+          height === sizesOld[key]?.height && width === sizesOld[key]?.width && isVisible === sizesOld[key]?.isVisible
             ? sizesOld
             : {
                 ...sizesOld,
@@ -193,7 +197,7 @@ const useNavAndFooterHeight = () => {
   useEffect(
     _.throttle(() => {
       const navEl = document.querySelector('.nav')
-      const footerEl = document.querySelector('.footer')
+      const footerEl = document.querySelector('[aria-label="footer"]')
       setNavAndFooterHeight(
         (navEl?.getBoundingClientRect().height || 0) + (footerEl?.getBoundingClientRect().height || 0),
       )
@@ -289,6 +293,7 @@ const linearizeTree = (
     const isTableCol1 = attributeEquals(state, head(simplePath), '=view', 'Table')
     const isTableCol2 = attributeEquals(state, head(rootedParentOf(state, simplePath)), '=view', 'Table')
     const isTableCol2Child = attributeEquals(state, head(rootedParentOf(state, parentOf(simplePath))), '=view', 'Table')
+    const autofocus = calculateAutofocus(state, childPath)
 
     const node: TreeThought = {
       belowCursor: !!belowCursor,
@@ -300,6 +305,7 @@ const linearizeTree = (
       isTableCol1,
       isTableCol2,
       isTableCol2Child,
+      autofocus,
       // In the context view, use filteredChild.id (the context) rather than child.id (the context parent), otherwise duplicate thoughts in the same context will have the same key.
       // For example, a/~m/cat and a/~m/cats need to use the ids of cat/cats rather than m.
       // filteredChild === child in normal view, so it does not matter in that case.
@@ -352,12 +358,23 @@ const LayoutTree = () => {
   const treeThoughts = useSelector(linearizeTree, _.isEqual)
   const fontSize = useSelector(state => state.fontSize)
   const dragInProgress = useSelector(state => state.dragInProgress)
+  const ref = useRef<HTMLDivElement | null>(null)
   const indentDepth = useSelector(state =>
     state.cursor && state.cursor.length > 2
       ? // when the cursor is on a leaf, the indention level should not change
         state.cursor.length - (hasChildren(state, head(state.cursor)) ? 2 : 3)
       : 0,
   )
+
+  const [bulletWidth, setBulletWidth] = useState<number | undefined>(0)
+
+  // set the bullet width only during drag or when simulateDrop is true
+  useLayoutEffect(() => {
+    if (dragInProgress || testFlags.simulateDrop) {
+      const bullet = ref.current?.querySelector('[aria-label=bullet]')
+      setBulletWidth(bullet?.getBoundingClientRect().width)
+    }
+  }, [dragInProgress])
 
   // singleLineHeight is the measured height of a single line thought.
   // If no sizes have been measured yet, use the estimated height.
@@ -567,12 +584,17 @@ const LayoutTree = () => {
         ycol1Ancestors.push({ y: yaccum + height, depth: node.depth })
       }
 
+      const isLastVisible =
+        (node.autofocus === 'dim' || node.autofocus === 'show') &&
+        !(next?.autofocus === 'dim' || next?.autofocus === 'show')
+
       return {
         ...node,
         cliff,
         height,
         singleLineHeightWithCliff,
         width: tableCol1Widths.get(head(parentOf(node.path))),
+        isLastVisible,
         x,
         y,
       }
@@ -604,7 +626,6 @@ const LayoutTree = () => {
   )
 
   const navAndFooterHeight = useNavAndFooterHeight()
-
   /** The space added below the last rendered thought and the breadcrumbs/footer. This is calculated such that there is a total of one viewport of height between the last rendered thought and the bottom of the document. This ensures that when the keyboard is closed, the scroll position will not change. If the caret is on a thought at the top edge of the screen when the keyboard is closed, then the document will shrink by the height of the virtual keyboard. The scroll position will only be forced to change if the document height is less than window.scrollY + window.innerHeight. */
   // Subtract singleLineHeight since we can assume that the last rendered thought is within the viewport. (It would be more accurate to use its exact rendered height, but it just means that there may be slightly more space at the bottom, which is not a problem. The scroll position is only forced to change when there is not enough space.)
   const spaceBelow = viewportHeight - navAndFooterHeight - CONTENT_PADDING_BOTTOM - singleLineHeight
@@ -616,6 +637,7 @@ const LayoutTree = () => {
         transform: `translateY(${-spaceAboveExtended + viewportHeight}px)`,
         marginTop: '0.501em',
       }}
+      ref={ref}
     >
       <div
         style={{
@@ -648,11 +670,13 @@ const LayoutTree = () => {
               path,
               prevChild,
               showContexts,
+              isLastVisible,
               simplePath,
               singleLineHeightWithCliff,
               style,
               thoughtId,
               width,
+              autofocus,
               x,
               y,
             },
@@ -664,6 +688,14 @@ const LayoutTree = () => {
             // Render virtualized thoughts with their estimated height so that document height is relatively stable.
             // Perform this check here instead of in virtualThoughtsPositioned since it changes with the scroll position (though currently `sizes` will change as new thoughts are rendered, causing virtualThoughtsPositioned to re-render anyway).
             if (belowCursor && !isCursor && y > viewportBottom + height) return null
+
+            const nextThought = isTableCol1 ? treeThoughtsPositioned[index + 1] : null
+            const previousThought = isTableCol1 ? treeThoughtsPositioned[index - 1] : null
+
+            // Adjust col1 width to remove dead zones between col1 and col2, increase the width by the difference between col1 and col2 minus bullet width
+            const xCol2 = isTableCol1 ? nextThought?.x || previousThought?.x || 0 : 0
+            // Increasing margin-right of thought for filling gaps and moving the thought to the left by adding negative margin from right.
+            const marginRight = isTableCol1 ? xCol2 - (width || 0) - x - (bulletWidth || 0) : 0
 
             return (
               <div
@@ -705,8 +737,13 @@ const LayoutTree = () => {
                   singleLineHeight={singleLineHeightWithCliff}
                   // Add a bit of space after a cliff to give nested lists some breathing room.
                   // Do this as padding instead of y, otherwise there will be a gap between drop targets.
-                  style={cliff < 0 ? cliffPaddingStyle : undefined}
+                  // In Table View, we need to set the cliff padding on col1 so it matches col2 padding, otherwise there will be a gap during drag-and-drop.
+                  style={cliff < 0 || isTableCol1 ? cliffPaddingStyle : undefined}
                   crossContextualKey={key}
+                  prevCliff={treeThoughtsPositioned[index - 1]?.cliff}
+                  isLastVisible={isLastVisible}
+                  autofocus={autofocus}
+                  marginRight={isTableCol1 ? marginRight : 0}
                 />
 
                 {/* DropEnd (cliff) */}
@@ -741,6 +778,8 @@ const LayoutTree = () => {
                           <DropEnd
                             depth={pathEnd.length}
                             path={pathEnd}
+                            cliff={cliff}
+                            isLastVisible={isLastVisible}
                             // Extend the click area of the drop target when there is nothing below.
                             // The last visible drop-end will always be a dimmed thought at distance 1 (an uncle).
                             // Dimmed thoughts at distance 0 should not be extended, as they are dimmed siblings and sibling descendants that have thoughts below

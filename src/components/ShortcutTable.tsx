@@ -24,7 +24,6 @@ const groups: {
       'moveCursorBackward',
       'moveCursorForward',
       'commandPalette',
-      'help',
       'home',
       'search',
     ],
@@ -57,6 +56,10 @@ const groups: {
     shortcuts: ['join', 'splitSentences', 'bold', 'italic', 'strikethrough', 'underline'],
   },
   {
+    title: 'Oops',
+    shortcuts: ['undo', 'redo'],
+  },
+  {
     title: 'Special Views',
     shortcuts: [
       'note',
@@ -76,6 +79,14 @@ const groups: {
   {
     title: 'Visibility',
     shortcuts: ['pin', 'pinAll', 'toggleDone', 'toggleHiddenThoughts'],
+  },
+  {
+    title: 'Settings',
+    shortcuts: ['customizeToolbar'],
+  },
+  {
+    title: 'Help',
+    shortcuts: ['help'],
   },
 ]
 
